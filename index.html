@@ -417,10 +417,14 @@ async function getValidToken() {
 document.getElementById('genBtn').onclick = async () => {
   try {
     const r = await fetch('/api/auth/url');
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`HTTP status ${r.status}: ${text.substring(0, 80)}`);
+    }
     const d = await r.json();
     window.location.href = d.url;
   } catch(e) {
-    document.getElementById('genMsg').textContent = 'Backend authentication server unreachable.';
+    document.getElementById('genMsg').textContent = 'Backend authentication server unreachable: ' + e.message;
   }
 };
 
@@ -1225,4 +1229,3 @@ document.getElementById('logoutBtn').onclick = logout;
 </script>
 </body>
 </html>
-
