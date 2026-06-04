@@ -189,6 +189,8 @@ td{padding:11px 16px;border-bottom:1px solid var(--border);font-size:13px}
       <div class="step">
         <div class="step-head"><div class="snum">1</div>Sign in with Google</div>
         <button id="genBtn" class="btn btn-blue" style="width:100%;padding:12px;font-size:14px">🔗 Connect Google Search Console</button>
+        <div style="margin: 10px 0; text-align: center; color: var(--text3); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">— OR —</div>
+        <button id="demoLoginBtn" class="btn" style="width:100%;padding:12px;font-size:13px;background: linear-gradient(135deg, var(--purple), var(--blue)); color: #fff; border: none; box-shadow: 0 2px 6px rgba(139, 92, 246, 0.25);">⚡ Continue in Sandbox Demo Mode</button>
         <div class="msg" id="genMsg"></div>
       </div>
       
@@ -386,6 +388,10 @@ function saveTokens(tokens) {
 async function silentRefresh() {
   const refreshToken = localStorage.getItem('gsc_refresh');
   if (!refreshToken) return;
+  if (refreshToken === 'mock_refresh_token') {
+    saveTokens({ access_token: 'mock_access_token', refresh_token: 'mock_refresh_token', expires_in: 3600 });
+    return;
+  }
   try {
     const res = await fetch('/api/auth/refresh', {
       method: 'POST',
@@ -402,6 +408,11 @@ async function getValidToken() {
   if (Date.now() < expires && accessToken) return accessToken;
   const refreshToken = localStorage.getItem('gsc_refresh');
   if (!refreshToken) throw new Error('No refresh session established');
+  if (refreshToken === 'mock_refresh_token') {
+    accessToken = 'mock_access_token';
+    localStorage.setItem('gsc_expires', String(Date.now() + 3600000));
+    return 'mock_access_token';
+  }
   const res = await fetch('/api/auth/refresh', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -414,6 +425,12 @@ async function getValidToken() {
 }
 
 // Event Bindings
+document.getElementById('demoLoginBtn').onclick = () => {
+  saveTokens({ access_token: 'mock_access_token', refresh_token: 'mock_refresh_token', expires_in: 3600 });
+  setMsg('genMsg', 'ok', '✓ Connected to Sandbox. Initializing search logs...');
+  setTimeout(() => { showDashboard(); loadData(); }, 800);
+};
+
 document.getElementById('genBtn').onclick = async () => {
   try {
     const r = await fetch('/api/auth/url');
@@ -525,6 +542,15 @@ function getDates() {
 
 async function fetchSites() {
   const token = await getValidToken();
+  if (token === 'mock_access_token') {
+    return [
+      { siteUrl: 'sc-domain:example.com' },
+      { siteUrl: 'https://testblog.com/' },
+      { siteUrl: 'sc-domain:searchengineland.com' },
+      { siteUrl: 'https://myshopifybrand.com/' },
+      { siteUrl: 'sc-domain:devportal.org' }
+    ];
+  }
   const cacheKey = `sites_${token.substring(0, 15)}`;
   const cached = await cache.get(cacheKey);
   if (cached) return cached.siteEntry || [];
@@ -538,6 +564,26 @@ async function fetchSites() {
 async function fetchTotals(siteUrl, start, end) {
   try {
     const token = await getValidToken();
+    if (token === 'mock_access_token') {
+      const name = siteUrl.replace(/^sc-domain:/, '').replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+      const hash = name.split('').reduce((acc, c)=>acc + c.charCodeAt(0), 0);
+      const isDomain = siteUrl.startsWith('sc-domain:');
+      
+      const clicks = Math.round(1500 + (hash % 8500));
+      const impressions = Math.round(clicks * (5 + (hash % 15)));
+      const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+      const position = 1.2 + (hash % 18);
+
+      return {
+        url: siteUrl,
+        name,
+        type: isDomain ? 'Domain' : 'URL',
+        clicks,
+        impressions,
+        ctr,
+        position
+      };
+    }
     const cacheKey = `totals_${siteUrl}_${start}_${end}`;
     const cached = await cache.get(cacheKey);
     if (cached) return cached;
@@ -558,6 +604,25 @@ async function fetchTotals(siteUrl, start, end) {
 
 async function fetchTimeSeriesCombined(sites, start, end) {
   const token = await getValidToken();
+  if (token === 'mock_access_token') {
+    const datesList = [];
+    const d = new Date(start);
+    const ed = new Date(end);
+    let safetyCounter = 0;
+    while(d <= ed && safetyCounter < 370) {
+      datesList.push(toYMD(d));
+      d.setDate(d.getDate() + 1);
+      safetyCounter++;
+    }
+    return datesList.map(dt => {
+      const dayShift = dt.split('').reduce((acc, c)=>acc + c.charCodeAt(0), 0);
+      const clicks = Math.round(300 + Math.sin(dayShift) * 120 + (dayShift % 150));
+      const impressions = Math.round(clicks * (8 + (dayShift % 6)));
+      const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+      const position = 5.4 + Math.cos(dayShift) * 1.5;
+      return { date: dt, clicks, impressions, ctr, position };
+    });
+  }
   const cacheKey = `ts_combined_${start}_${end}`;
   const cached = await cache.get(cacheKey);
   if (cached) return cached;
@@ -809,16 +874,34 @@ async function inspectPropertyDetails(siteUrl) {
   const token = await getValidToken();
 
   try {
-    // Top keywords (Query overall totals across GSC)
-    const kwRes = await fetch('/api/gsc/query', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ siteUrl, startDate: start, endDate: end, dimensions: ['query'], rowLimit: 40 })
-    });
-    const kwD = await kwRes.json();
-    let kwRows = (kwD.rows || []).map(r => ({
-      keyword: r.keys[0], clicks: Math.round(r.clicks), impressions: Math.round(r.impressions), ctr: r.ctr*100, position: r.position
-    }));
+    let kwRows = [];
+    let tlRows = [];
+    
+    if (token === 'mock_access_token') {
+      const hash = site.name.split('').reduce((acc, c)=>acc + c.charCodeAt(0), 0);
+      kwRows = [
+        { keyword: `organic ranking for ${site.name}`, clicks: Math.round(180 + (hash % 120)), impressions: Math.round(1200 + (hash % 800)), ctr: 12.5, position: 1.8 },
+        { keyword: `${site.name} search engine logs`, clicks: Math.round(130 + (hash % 90)), impressions: Math.round(1000 + (hash % 700)), ctr: 9.8, position: 2.6 },
+        { keyword: `how to index ${site.name}`, clicks: Math.round(95 + (hash % 60)), impressions: Math.round(800 + (hash % 500)), ctr: 14.1, position: 4.2 },
+        { keyword: `keyword position analyzer tool`, clicks: Math.round(60 + (hash % 40)), impressions: Math.round(600 + (hash % 400)), ctr: 8.7, position: 6.9 },
+        { keyword: `seo diagnostics audit`, clicks: Math.round(40 + (hash % 30)), impressions: Math.round(450 + (hash % 300)), ctr: 11.2, position: 10.4 }
+      ];
+    } else {
+      try {
+        // Top keywords (Query overall totals across GSC)
+        const kwRes = await fetch('/api/gsc/query', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ siteUrl, startDate: start, endDate: end, dimensions: ['query'], rowLimit: 40 })
+        });
+        const kwD = await kwRes.json();
+        kwRows = (kwD.rows || []).map(r => ({
+          keyword: r.keys[0], clicks: Math.round(r.clicks), impressions: Math.round(r.impressions), ctr: r.ctr*100, position: r.position
+        }));
+      } catch(e) {
+        console.warn("Failed to fetch live queries, using fallback.", e);
+      }
+    }
 
     // Fallback if brand new GSC property is empty (simulates demo values to show live functionality)
     if (kwRows.length === 0) {
@@ -834,14 +917,20 @@ async function inspectPropertyDetails(siteUrl) {
     modalKeywordsData = kwRows;
     selectModalKeywordIdx = 0;
 
-    // Daily Timeline for tracking Top 5 keywords dynamically over the date range
-    const timelineRes = await fetch('/api/gsc/query', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ siteUrl, startDate: start, endDate: end, dimensions: ['date', 'query'], rowLimit: 500 })
-    });
-    const tlD = await timelineRes.json();
-    let tlRows = tlD.rows || [];
+    if (token !== 'mock_access_token') {
+      try {
+        // Daily Timeline for tracking Top 5 keywords dynamically over the date range
+        const timelineRes = await fetch('/api/gsc/query', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ siteUrl, startDate: start, endDate: end, dimensions: ['date', 'query'], rowLimit: 500 })
+        });
+        const tlD = await timelineRes.json();
+        tlRows = tlD.rows || [];
+      } catch(e) {
+        console.warn("Failed to fetch live timeline, using fallback.", e);
+      }
+    }
 
     // Pre-create fallback dataset if timeline querying is empty
     if (tlRows.length === 0) {
@@ -1141,28 +1230,50 @@ async function exportDailyBreakdown() {
   document.getElementById('progressText').textContent = 'Syncing full daily breakdown...';
 
   const rowsList = [];
-  for (let i = 0; i < allData.length; i++) {
-    const s = allData[i];
-    document.getElementById('progressFill').style.width = `${Math.round(((i+1)/allData.length)*100)}%`;
-    let resList = [];
-    try {
-      const token = await getValidToken();
-      const r = await fetch('/api/gsc/query', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteUrl: s.url, startDate: start, endDate: end, dimensions: ['date'], rowLimit: 400 })
-      });
-      if (r.ok) {
-        const d = await r.json();
-        resList = d.rows || [];
+  try {
+    const token = await getValidToken();
+    for (let i = 0; i < allData.length; i++) {
+      const s = allData[i];
+      document.getElementById('progressFill').style.width = `${Math.round(((i+1)/allData.length)*100)}%`;
+      let resList = [];
+      
+      if (token === 'mock_access_token') {
+        const d = new Date(start);
+        const ed = new Date(end);
+        let list = [];
+        let safety = 0;
+        while(d <= ed && safety < 370) {
+          const dtStr = toYMD(d);
+          const clicks = Math.round(10 + Math.random()*50);
+          const impressions = Math.round(100 + Math.random()*500);
+          const ctr = impressions > 0 ? (clicks/impressions) : 0;
+          const position = 4.5 + Math.random()*2;
+          list.push({ keys: [dtStr], clicks, impressions, ctr, position });
+          d.setDate(d.getDate() + 1);
+          safety++;
+        }
+        resList = list;
+      } else {
+        try {
+          const r = await fetch('/api/gsc/query', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ siteUrl: s.url, startDate: start, endDate: end, dimensions: ['date'], rowLimit: 400 })
+          });
+          if (r.ok) {
+            const d = await r.json();
+            resList = d.rows || [];
+          }
+        } catch(e) {}
       }
-    } catch(e) {}
-    resList.forEach(pt => {
-      rowsList.push({
-        'Domain': s.name, 'Date': pt.keys[0], 'Clicks': pt.clicks, 'Impressions': pt.impressions, 'CTR (%)': pt.ctr*100, 'Rank Location': pt.position
+      
+      resList.forEach(pt => {
+        rowsList.push({
+          'Domain': s.name, 'Date': pt.keys[0], 'Clicks': pt.clicks, 'Impressions': pt.impressions, 'CTR (%)': pt.ctr*100, 'Rank Location': pt.position
+        });
       });
-    });
-  }
+    }
+  } catch(e) {}
 
   const ws = XLSX.utils.json_to_sheet(rowsList);
   const wb = XLSX.utils.book_new();
